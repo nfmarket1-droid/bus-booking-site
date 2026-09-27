@@ -77,7 +77,10 @@ const Index = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [calendarByDirection, setCalendarByDirection] = useState<Record<Direction, Record<string, SourceStatus>>>({ forward: {}, return: {} });
-  const [discountByDirection, setDiscountByDirection] = useState<Record<Direction, Record<string, boolean>>>({ forward: {}, return: {} });
+    const [discountByDirection, setDiscountByDirection] = useState<Record<Direction, Record<string, boolean>>>({ forward: {}, return: {} });
+    const [routeId, setRouteId] = useState<string>('');
+        const [isLoadingRoute, setIsLoadingRoute] = useState(true);
+        const [error, setError] = useState<string | null>(null);
 
   // Whether the customer's picked origin/destination is the Kyiv→Вльора leg or the
   // Вльора→Kyiv leg — this decides which cached direction we search, and (for
@@ -87,29 +90,49 @@ const Index = () => {
 
   useEffect(() => {
     // Loads BOTH directions' calendars up front — a round trip always needs
-    // availability data for both legs regardless of which one the customer
-    // searches "outward" first.
-    const loadCalendars = async () => {
-      const { data } = await supabase
-        .from('tours')
-        .select('direction, departure_date, source_status, price, child_price')
-        .gte('departure_date', toInputDate(new Date()));
-      if (!data) return;
-      const statusMap: Record<Direction, Record<string, SourceStatus>> = { forward: {}, return: {} };
-      const discountMap: Record<Direction, Record<string, boolean>> = { forward: {}, return: {} };
-      for (const row of data) {
-        const dir = row.direction as Direction;
-        statusMap[dir][row.departure_date] = row.source_status as SourceStatus;
-        // Some routes may charge less for children than adults, others don't — we
-        // only surface the "Діти" picker for dates where ALF actually returned a
-        // cheaper child fare, so agents/customers aren't offered a fake discount.
-        discountMap[dir][row.departure_date] = row.child_price !== null && row.price !== null && Number(row.child_price) < Number(row.price);
+      // availability data for both legs regardless of which one the customer
+      // searches "outward" first.
+      const loadCalendars = async () => {
+              try {
+                // Fetch the active route ID first
+                const { data: routes } = await supabase.from('alf_routes').select('id').eq('is_active', true).limit(1);
+                const activeRouteId = routes?.[0]?.id ?? '';
+                setRouteId(activeRouteId);
+      
+                // Safe check: if no active route ID, stop here and log error
+                if (!activeRouteId) {
+                  console.error('[Index] No active route found, cannot load calendars');
+                  setError('Не вдалося завантажити маршрути. Будь ласка, спробуйте пізніше.');
+                  return;
+                }
+      
+                const { data } = await supabase
+                  .from('tours')
+                  .select('direction, departure_date, source_status, price, child_price')
+                  .eq('route_id', activeRouteId)
+                  .gte('departure_date', toInputDate(new Date()));
+                if (!data) return;
+        const statusMap: Record<Direction, Record<string, SourceStatus>> = { forward: {}, return: {} };
+        const discountMap: Record<Direction, Record<string, boolean>> = { forward: {}, return: {} };
+        for (const row of data) {
+          const dir = row.direction as Direction;
+          statusMap[dir][row.departure_date] = row.source_status as SourceStatus;
+          // Some routes may charge less for children than adults, others don't — we
+          // only surface the "Діти" picker for dates where ALF actually returned a
+          // cheaper child fare, so agents/customers aren't offered a fake discount.
+          discountMap[dir][row.departure_date] = row.child_price !== null && row.price !== null && Number(row.child_price) < Number(row.price);
+        }
+        setCalendarByDirection(statusMap);
+        setDiscountByDirection(discountMap);
+        setAnchorDepartureDate((current) => current || Object.keys(statusMap.forward).sort()[0] || '');
+      } catch (error) {
+        console.error('[Index] Error loading calendars:', error);
+        setError('Не вдалося завантажити календарі. Спробуйте пізніше.');
+      } finally {
+        setIsLoadingRoute(false);
       }
-      setCalendarByDirection(statusMap);
-      setDiscountByDirection(discountMap);
-      setAnchorDepartureDate((current) => current || Object.keys(statusMap.forward).sort()[0] || '');
-    };
-    loadCalendars();
+      };
+      loadCalendars();
   }, []);
 
   const tourStatusByDate = calendarByDirection[searchDirection];
@@ -238,10 +261,17 @@ const Index = () => {
       return;
     }
     if (tripType === 'roundtrip' && !returnDate) {
-      toast.error('Оберіть дату повернення для маршруту "Туди і назад"');
-      return;
-    }
-    setIsSearching(true);
+          toast.error('Оберіть дату повернення для маршруту "Туди і назад"');
+          return;
+        }
+        
+        // Safe check: if no route ID, stop here and show error
+        if (!routeId) {
+          toast.error('Маршрут не знайдено. Будь ласка, спробуйте пізніше.');
+          return;
+        }
+        
+        setIsSearching(true);
     setTour(null);
     setReturnTour(null);
     // The customer search always queries our local cache instantly — never a live
@@ -250,6 +280,7 @@ const Index = () => {
     const { data } = await supabase
       .from('tours')
       .select('*')
+      .eq('route_id', routeId)
       .eq('direction', searchDirection)
       .eq('departure_date', anchorDepartureDate)
       .maybeSingle();
@@ -258,6 +289,7 @@ const Index = () => {
       const { data: returnLegData } = await supabase
         .from('tours')
         .select('*')
+        .eq('route_id', routeId)
         .eq('direction', oppositeDirection)
         .eq('departure_date', anchorReturnDate)
         .maybeSingle();
@@ -289,22 +321,27 @@ const Index = () => {
       return;
     }
     setIsSubmitting(true);
-    const { error } = await supabase.from('bookings').insert({
-      origin,
-      destination,
-      departure_date: departureDate,
-      return_date: tripType === 'roundtrip' ? returnDate || null : null,
-      trip_type: tripType,
-      passenger_count: totalPassengers,
-      passengers: form.passengerNames.map((fullName, index) =>
-        index < adults ? { fullName, type: 'adult' } : { fullName, type: 'child', age: childAges[index - adults] },
-      ),
-      extras: { adults, children, childAges },
-      contact_name: form.passengerNames[0] ?? '',
-      phone: form.phone,
-      email: form.email,
-      total_price: totalPrice,
-    });
+    // Generate a simple booking reference (in production, use a more robust method)
+        const bookingReference = `MS-${Date.now().toString(36).toUpperCase()}`;
+        
+        const { error } = await supabase.from('bookings').insert({
+          origin,
+          destination,
+          departure_date: departureDate,
+          return_date: tripType === 'roundtrip' ? returnDate || null : null,
+          trip_type: tripType,
+          passenger_count: totalPassengers,
+          passengers: form.passengerNames.map((fullName, index) =>
+            index < adults ? { fullName, type: 'adult' } : { fullName, type: 'child', age: childAges[index - adults] },
+          ),
+          extras: { adults, children, childAges },
+          contact_name: form.passengerNames[0] ?? '',
+          phone: form.phone,
+          email: form.email,
+          total_price: totalPrice,
+          booking_reference,
+          source: 'website', // Indicate the source of the booking
+        });
     setIsSubmitting(false);
     if (error) {
       toast.error('Не вдалося надіслати заявку. Спробуйте ще раз.');
@@ -335,7 +372,7 @@ const Index = () => {
         <section id="переваги" className="mx-auto max-w-[1240px] px-5 py-20 lg:px-8"><div className="grid gap-5 md:grid-cols-3"><Benefit icon={<ShieldCheck />} title="Чесна ціна" text="Показуємо тільки значення, яке наш кеш зберіг з активної кнопки покупки на стороні ALF." /><Benefit icon={<Users />} title="Людяна підтримка" text="Менеджер зв’яжеться з вами та допоможе спокійно підготувати поїздку." /><Benefit icon={<Sparkles />} title="Все для дороги" text="Пряме сполучення без пересадок, з комфортними зупинками у дорозі." /></div></section>
       </main>
       <footer id="контакти" className="bg-[#123b4a] text-white"><div className="mx-auto grid max-w-[1240px] gap-10 px-5 py-12 lg:grid-cols-[1.5fr_1fr_1fr] lg:px-8"><div><div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#f1bf6b] text-[#123b4a]"><Route size={20} /></span><span className="font-display text-xl font-semibold">Морський Шлях</span></div><p className="mt-5 max-w-sm text-sm leading-6 text-white/60">Подорожі до Адріатики, які хочеться повторити.</p></div><div><p className="text-xs font-bold uppercase tracking-[.17em] text-[#f1bf6b]">Зв’язок</p><a href="tel:+380671234567" className="mt-4 flex items-center gap-2 text-sm text-white/80"><Phone size={16} /> +38 (067) 123-45-67</a><a href="mailto:hello@morskyishliakh.ua" className="mt-3 flex items-center gap-2 text-sm text-white/80"><Mail size={16} /> hello@morskyishliakh.ua</a></div><div><p className="text-xs font-bold uppercase tracking-[.17em] text-[#f1bf6b]">Для менеджерів</p><Link to="/admin" className="mt-4 inline-flex items-center gap-2 text-sm text-white/80 hover:text-white">Увійти до кабінету</Link></div></div><div className="border-t border-white/10 py-5 text-center text-xs text-white/35">© 2025 Морський Шлях · Працюємо з туроператором ALF</div></footer>
-      {isBookingOpen && tour && <BookingModal tour={tour} origin={origin} destination={destination} departureDate={departureDate} totalPrice={totalPrice} adults={adults} childAges={childAges} form={form} setForm={setForm} isSubmitting={isSubmitting} isSubmitted={isSubmitted} onClose={() => setIsBookingOpen(false)} onSubmit={submitBooking} />}
+      {isBookingOpen && tour && <BookingModal tour={tour} origin={origin} destination={destination} departureDate={departureDate} totalPrice={totalPrice} adults={adults} childAges={childAges} form={form} setForm={setForm} isSubmitting={isSubmitting} isSubmitted={isSubmitted} onClose={() => setIsBookingOpen(false)} onSubmit={submitBooking} hasChildDiscount={hasChildDiscount} />}
     </div>
   );
 };
@@ -390,12 +427,7 @@ const DatePicker = ({
           defaultMonth={selectedDate ?? minimumDate}
           disabled={disabledMatchers.length ? disabledMatchers : undefined}
           modifiers={dateStatusMap ? { tourAvailable: availableDates, tourFew: fewDates, tourSoldOut: soldOutDates } : undefined}
-          modifiersClassNames={{
-            tourAvailable: '!bg-[#ddf2e8] !text-[#1c7a52] font-bold rounded-full',
-            tourFew: '!bg-[#fff1d9] !text-[#a86c25] font-bold rounded-full',
-            tourSoldOut: '!bg-[#fbe4e4] !text-[#b33a3a] font-bold rounded-full',
-          }}
-          classNames={{ month_caption: 'relative flex min-h-10 items-center justify-center pt-1', nav: 'pointer-events-none absolute inset-x-0 top-1/2 z-10 flex -translate-y-1/2 items-center justify-between px-1', button_previous: 'pointer-events-auto h-8 w-8 rounded-lg border border-[#d7e5ea] bg-white p-0 text-[#147d92] hover:bg-[#eef7fa]', button_next: 'pointer-events-auto h-8 w-8 rounded-lg border border-[#d7e5ea] bg-white p-0 text-[#147d92] hover:bg-[#eef7fa]' }}
+          classNames={{ month_caption: 'relative flex min-h-10 items-center justify-center pt-1', nav: 'pointer-events-none absolute inset-x-0 top-1/2 z-10 flex -translate-y-1/2 items-center justify-between px-1', nav_button_previous: 'pointer-events-auto h-8 w-8 rounded-lg border border-[#d7e5ea] bg-white p-0 text-[#147d92] hover:bg-[#eef7fa]', nav_button_next: 'pointer-events-auto h-8 w-8 rounded-lg border border-[#d7e5ea] bg-white p-0 text-[#147d92] hover:bg-[#eef7fa]', day: (date) => { const dateStr = toInputDate(date); const status = dateStatusMap?.[dateStr]; if (status === 'available' || status === 'demo') return '!bg-[#ddf2e8] !text-[#1c7a52] font-bold rounded-full'; if (status === 'few') return '!bg-[#fff1d9] !text-[#a86c25] font-bold rounded-full'; if (status === 'sold_out') return '!bg-[#fbe4e4] !text-[#b33a3a] font-bold rounded-full'; return ''; } }}
           onSelect={(date) => { if (date) { onChange(toInputDate(date)); setOpen(false); } }}
           initialFocus
         />
@@ -559,14 +591,14 @@ const EmptySearch = () => (
 
 const Benefit = ({ icon, title, text }: { icon: ReactNode; title: string; text: string }) => <div className="rounded-[24px] border border-[#e2edf1] bg-white p-6"><div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#e8f3f1] text-[#147d92]">{icon}</div><h3 className="mt-4 font-display text-lg font-semibold">{title}</h3><p className="mt-2 text-sm leading-6 text-[#718484]">{text}</p></div>;
 
-const BookingModal = ({ tour, origin, destination, departureDate, totalPrice, adults, childAges, form, setForm, isSubmitting, isSubmitted, onClose, onSubmit }: { tour: Tour; origin: string; destination: string; departureDate: string; totalPrice: number | null; adults: number; childAges: number[]; form: BookingForm; setForm: Dispatch<SetStateAction<BookingForm>>; isSubmitting: boolean; isSubmitted: boolean; onClose: () => void; onSubmit: (event: FormEvent) => void }) => (
+const BookingModal = ({ tour, origin, destination, departureDate, totalPrice, adults, childAges, form, setForm, isSubmitting, isSubmitted, onClose, onSubmit, hasChildDiscount }: { tour: Tour; origin: string; destination: string; departureDate: string; totalPrice: number | null; adults: number; childAges: number[]; form: BookingForm; setForm: Dispatch<SetStateAction<BookingForm>>; isSubmitting: boolean; isSubmitted: boolean; onClose: () => void; onSubmit: (event: FormEvent) => void; hasChildDiscount: boolean }) => (
   <div className="fixed inset-0 z-50 flex items-end justify-center bg-[#0d2530]/60 p-0 backdrop-blur-sm sm:items-center sm:p-5" onClick={onClose}>
     <div className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-[32px] bg-white p-6 shadow-2xl sm:rounded-[32px] sm:p-8" onClick={(event) => event.stopPropagation()}>
       {isSubmitted ? (
         <div className="py-10 text-center"><div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[#ddf2e8] text-[#1c7a52]"><ShieldCheck size={30} /></div><h3 className="mt-6 font-display text-2xl font-semibold">Заявку прийнято!</h3><p className="mx-auto mt-3 max-w-sm text-sm leading-6 text-[#718484]">Наш менеджер зв’яжеться з вами протягом робочого дня для підтвердження бронювання.</p><button onClick={onClose} className="mt-7 rounded-2xl bg-[#147d92] px-6 py-3 font-bold text-white hover:bg-[#0d6577]">Готово</button></div>
       ) : (
         <form onSubmit={onSubmit}>
-          <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#147d92]">Оформлення заявки</p><h3 className="mt-1 font-display text-2xl font-semibold">{origin} → {destination}</h3><p className="mt-1 text-sm text-[#718484]">{formatDate(departureDate)} · {describePassengers(adults, childAges.length)}</p></div><button type="button" onClick={onClose} className="rounded-xl p-2 text-[#8ba09f] hover:bg-[#f4f7f4]"><X size={20} /></button></div>
+          <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#147d92]">Оформлення заявки</p><h3 className="mt-1 font-display text-2xl font-semibold">{origin} → {destination}</h3><p className="mt-1 text-sm text-[#718484]">{formatDate(departureDate)} · {describePassengers(adults, childAges.length, hasChildDiscount)}</p></div><button type="button" onClick={onClose} className="rounded-xl p-2 text-[#8ba09f] hover:bg-[#f4f7f4]"><X size={20} /></button></div>
           <div className="mt-6 grid gap-4">
             <p className="detail-label">ПІБ пасажирів</p>
             {form.passengerNames.map((name, index) => {
