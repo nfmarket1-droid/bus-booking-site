@@ -1,0 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 40 33% 97%;
+    --foreground: 198 58% 19%;
+    --card: 0 0% 100%;
+    --card-foreground: 198 58% 19%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 198 58% 19%;
+    --primary: 190 73% 33%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 164 38% 91%;
+    --secondary-foreground: 198 58% 19%;
+    --muted: 164 25% 93%;
+    --muted-foreground: 190 14% 47%;
+    --accent: 38 80% 69%;
+    --accent-foreground: 198 58% 19%;
+    --destructive: 11 49% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 164 25% 88%;
+    --input: 164 25% 88%;
+    --ring: 190 73% 33%;
+    --radius: 1rem;
+  }
+
+  * { @apply border-border; }
+  html { scroll-behavior: smooth; }
+  body { @apply bg-background text-foreground; font-family: 'DM Sans', sans-serif; }
+  button, input, select, textarea { font: inherit; }
+}
+
+@layer components {
+  .font-display { font-family: 'Manrope', sans-serif; }
+  .eyebrow { @apply text-xs font-bold uppercase tracking-[.18em] text-[#147d92]; }
+  .section-title { @apply font-display text-3xl font-semibold leading-tight tracking-[-.05em] text-[#123b4a] sm:text-4xl lg:text-[44px]; }
+  .form-control { @apply h-[50px] w-full rounded-xl border border-[#d7e5ea] bg-white px-3.5 text-sm font-semibold text-[#315b62] outline-none transition placeholder:text-[#9badab] focus:border-[#0b9bc1] focus:bg-white focus:ring-4 focus:ring-[#0b9bc1]/10 disabled:cursor-not-allowed; }
+  .soft-pill { @apply inline-flex items-center gap-2 rounded-xl border border-[#dcebef] bg-white px-3.5 py-2 text-xs font-bold text-[#147d92]; }
+  .detail-label { @apply text-[10px] font-bold uppercase tracking-[.14em] text-[#8ba09f]; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up { animation: fade-up .45s ease-out both; }
+
+.admin-auth button { min-height: 48px; border-radius: 14px !important; font-weight: 700 !important; }
+.admin-auth input { min-height: 48px; border-radius: 14px !important; }
+.admin-auth label { color: #315b62 !important; font-size: .82rem !important; font-weight: 700 !important; }
+.admin-auth a { color: #147d92 !important; font-weight: 700 !important; }
