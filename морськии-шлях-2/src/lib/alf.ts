@@ -12,6 +12,7 @@ export type Stop = {
 
 export type Tour = {
   id: string;
+  route_id: string;
   direction: Direction;
   origin: string;
   destination: string;
@@ -51,11 +52,18 @@ export const forwardStops: Stop[] = [
 
 export const returnStops: Stop[] = [...forwardStops]
   .reverse()
-  .map((stop, index, all) => ({
-    ...stop,
-    time: index === 0 ? '11:00' : index === all.length - 1 ? '05:00' : undefined,
-    note: index === all.length - 1 ? '+2 дні' : index === 0 ? 'АС Вльора' : undefined,
-  }));
+  .map((stop, index, all) => {
+    // Очищаємо часові мітки forward-напрямку, щоб вони не накладалися
+    const cleanedStop = { ...stop };
+    delete cleanedStop.time;
+    delete cleanedStop.note;
+
+    return {
+      ...cleanedStop,
+      time: index === 0 ? '11:00' : index === all.length - 1 ? '05:00' : undefined,
+      note: index === all.length - 1 ? '+2 дні' : index === 0 ? 'АС Вльора' : undefined,
+    };
+  });
 
 // All cities along the Kyiv→Vlora route (in order)
 export const allRouteCities = [
@@ -214,7 +222,7 @@ export type SegmentSchedule = {
 export const computeSegmentSchedule = (
   originCity: string,
   destinationCity: string,
-  tour: { departure_time: string },
+  tour: Tour, // Використовуємо повноцінний тип замість inline-об'єкта
   direction: Direction = 'forward',
 ): SegmentSchedule | null => {
   const originHours = getDirectionalHours(originCity, direction);
